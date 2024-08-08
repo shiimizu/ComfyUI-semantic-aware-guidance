@@ -36,7 +36,7 @@ from comfy.model_patcher import ModelPatcher
 from operator import mul
 from weakref import WeakSet
 from comfy.ldm.modules.attention import optimized_attention_masked
-from .utils import GaussianSmoothing, rep, ceildiv
+from .utils import GaussianSmoothing, rep
 
 class AttentionControl(abc.ABC):
 
@@ -301,7 +301,7 @@ class MyCrossAttnProcessor:
 
         return attention_probs
 
-def get_mask(attention_store: AttentionStore,r: int=4):
+def get_mask(attention_store: AttentionStore,r: int=4, cond=None):
     """ Aggregates the attention across the different layers and heads at the specified resolution. """
 
     key_cross = f"r{r}_cross"
@@ -325,7 +325,7 @@ def get_mask(attention_store: AttentionStore,r: int=4):
         am_ca = attention_maps.get(key_cross, [])
         if len(am_sa) == 0 or len(am_ca) == 0:
             if len(am_sa) == 0 and len(am_ca) == 0:
-                print('[S-CFG] An error occured trying to get the attention masks. Length:', len(am_sa), len(am_ca))
+                print(f'[S-CFG] An error occured trying to get the attention masks. {key_self} {key_cross} Length:', len(am_sa), len(am_ca))
                 # import pdb;pdb.set_trace()
             curr_r = int(curr_r * 2)
             r_r *= 2
@@ -366,30 +366,23 @@ def get_mask(attention_store: AttentionStore,r: int=4):
         torch.cuda.empty_cache()
         ca=ca_
 
-        h = w = int(sa.size(1)**(0.5))
-
-        # hacky padding for other resolutions
-        if h * h < ca.size(1):
-            h += 1  # Increase h to the next integer if necessary
-            # Pad the tensor to make the second dimension a perfect square
-            h = ceildiv(h,2)*2
-            pad_size = (h * h) - ca.size(1)
-            ca = F.pad(ca, (0, 0, 0, pad_size), mode='reflect')
-            sa = F.pad(sa, (0, 0, 0, pad_size), mode='reflect')
+        area = ca.size(1)
+        height, width = cond.shape[-2:]
+        aspect_ratio = width / height
+        if aspect_ratio >= 1.0:
+            h = round((area / aspect_ratio) ** 0.5)
+            hw = (h, -1)
+        else:
+            w = round((area * aspect_ratio) ** 0.5)
+            hw = (-1, w)
 
 
         # ca = rearrange(ca, 'b (h w) c -> b c h w', h=h )
-        ca = ca.view(ca.size(0), h, -1, ca.size(2)).permute(0, 3, 1, 2)
+        ca = ca.view(ca.size(0), *hw, ca.size(2)).permute(0, 3, 1, 2)
         if r_r>1:
-            # mode = 'nearest-exact'
             mode =  'bilinear' # 'nearest'
-            ca = F.interpolate(ca, scale_factor=r_r, mode=mode) # b 77 32 32
-            # hack to interpolate
-            if isinstance(new_ca, torch.Tensor) and new_ca.shape[-2] != ca.shape[-2]:
-                new_ca = F.interpolate(new_ca, size=ca.shape[-2:], mode=mode)
-            if isinstance(new_fore, torch.Tensor) and new_fore.shape[-2] != ca.shape[-2]:
-                new_fore = F.interpolate(new_fore, size=ca.shape[-2:], mode=mode)
-
+            # ca = F.interpolate(ca, scale_factor=r_r, mode=mode) # b 77 32 32
+            ca = F.interpolate(ca, size=new_ca.shape[-2:], mode=mode)
 
         #####Gaussian Smoothing
         smoothing = getattr(attention_store, 'smoothing', None)
@@ -406,12 +399,8 @@ def get_mask(attention_store: AttentionStore,r: int=4):
         ca = ca.view(-1, channel, *ca.shape[-2:])
         
         ca_norm = ca/(ca.mean(dim=[2,3], keepdim=True)+1e-8) ### spatial  normlization 
-        # try:
         # new_ca+=rearrange(ca_norm, '(b n) c h w -> b n c h w', n=attn_num).sum(1) 
         new_ca+=ca_norm.view(-1, attn_num, *ca_norm.shape[-3:]).sum(1) 
-        # except Exception as e:
-        #     print(e)
-        #     import pdb;pdb.set_trace()
 
         fore_ca = torch.stack([ca[:,0],ca[:,1:].sum(dim=1)], dim=1)
         froe_ca_norm = fore_ca/fore_ca.mean(dim=[2,3], keepdim=True) ### spatial  normlization 
@@ -536,7 +525,7 @@ class SCFG:
 
         R = 4 # starting number when processing r#_cross/r#_self blocks
         
-        ca_mask, fore_mask = get_mask(self.attention_store, r=R)
+        ca_mask, fore_mask = get_mask(self.attention_store, r=R, cond=cond)
 
         if ca_mask is None or fore_mask is None:
             return noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
