@@ -1,0 +1,14 @@
+[project]
+name = "comfyui-semantic-aware-guidance"
+description = "ComfyUI node for Semantic-aware Guidance based on the [a/paper](https://arxiv.org/abs/2404.05384) 'Rethinking the Spatial Inconsistency in Classifier-Free Diffusion Guidance'"
+version = "1.0.0"
+license = {file = "LICENSE"}
+
+[project.urls]
+Repository = "https://github.com/shiimizu/ComfyUI-semantic-aware-guidance"
+#  Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = ""
+DisplayName = "ComfyUI-semantic-aware-guidance"
+Icon = ""
